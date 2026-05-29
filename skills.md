@@ -621,5 +621,232 @@
   - `os.path.join`에 슬래시로 시작하는 경로를 주입하면 드라이브 루트로 재매핑되는 파이썬 고유의 특성이 있어 정적 경로 버그를 유발하므로 반드시 서브 디렉토리명을 개별 인자로 구분해서 전달해야 합니다.
   - Windows의 외부 실행 파일(`ffmpeg`)은 명령줄 인자에 Smart Quote(`“`, `”`)가 포함될 경우 `Illegal byte sequence`로 크래시를 내므로 물리 파일명을 무조건 영문/숫자/공백 등 일반 문자로 정비해서 호출해야 동작이 안전하게 보장됩니다.
 
+### Skill 40: OpenAI TTS API 연동 및 상황별 파라미터 최적화 튜닝
+- **파일**: `part04_multimodal/ch03_tts_01_basic.py`, `part04_multimodal/ch03_tts_02_speedComp.py`
+- **핵심**: `client.audio.speech.create` API를 활용하여 텍스트를 고품질 음성으로 변환하고 `response.write_to_file()`로 디스크에 신속히 기록하는 기본 TTS 구현 및 파라미터 최적화 기법을 다룹니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  response = client.audio.speech.create(
+    model="tts-1",
+    voice="onyx",       # 긴급 상황 경보에 적합한 낮고 권위 있는 목소리
+    input=alert_text,
+    response_format="wav",
+    speed=1.2           # 긴급 경보 상황에서 긴박감을 나타내기 위해 1.2배속 튜닝
+  )
+  response.write_to_file(output_path)
+  ```
+- **자료형 및 파라미터 (Data Types & Params)**:
+  - `voice`: `alloy`(일반 중립), `echo`(차분), `fable`(내레이션), `onyx`(긴급 경보), `nova`(밝은 주의), `shimmer`(친근) 등 6종 보이스.
+  - `model`: `tts-1`(지연 최소화, 실시간 경보용), `tts-1-hd`(고품질, 방송/녹음용).
+  - `speed`: float 타입, 0.25 ~ 4.0 범위. (긴급 상황은 1.2, 일반 상황은 1.0, 정보 취약 계층 대상은 0.75 권장)
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - 실시간 보안 경보 파이프라인에서는 속도가 최우선이므로 비용이 비싸고 지연이 긴 `tts-1-hd` 대신 경량형인 `tts-1` 모델을 고정 사용해야 합니다.
+
+### Skill 41: 긴 텍스트 문장 단위 청크 분할 및 스트리밍 파일 쓰기 아키텍처
+- **파일**: `part04_multimodal/ch03_tts_03_straming.py`
+- **핵심**: 대규모 브리핑 문장을 정규표현식으로 정밀 분할하고, `with_streaming_response` 컨텍스트 매니저를 결합해 네트워크 스트림 상태에서 메모리 누수 없이 실시간 디스크 쓰기를 수행하는 스트리밍 아키텍처를 구현합니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  import re
+  from pathlib import Path
+
+  def split_into_sentence(text: str, max_chars: int = 200) -> list[str]:
+    # 마침표, 느낌표, 물음표, 개행 문자 뒤 공백을 기준으로 분할
+    sentences = re.split(r'(?<=[.!?\n])\s*', text.strip())
+    chunks = []
+    current_chunk = ""
+    for sentence in sentences:
+      sentence = sentence.strip()
+      if not sentence: continue
+      if len(current_chunk) + len(sentence) <= max_chars:
+        current_chunk += (" " if current_chunk else "") + sentence
+      else:
+        if current_chunk: chunks.append(current_chunk)
+        current_chunk = sentence
+    if current_chunk: chunks.append(current_chunk)
+    return chunks
+
+  # 스트리밍 저장 처리
+  with client.audio.speech.with_streaming_response.create(
+    model="tts-1",
+    voice="onyx",
+    input=chunk,
+    response_format="mp3"
+  ) as response:
+    response.stream_to_file(output_path)
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - `stream_to_file()`은 전체 음성 데이터를 RAM 메모리에 한 번에 올리는 `write_to_file()`과 달리, 청크가 수신되는 즉시 하드웨어에 영속 기록하므로 대규모 보안 상황 요약이나 오디오 변환 시 메모리 OOM(Out Of Memory) 현상을 예방하는 데 결정적인 도움을 줍니다.
+  - 첫 번째 분할 문장 청크가 로컬에 변환 완료되는 즉시 백그라운드 재생 시스템을 호출하면, 전체 문장을 끝까지 변환하느라 대기하는 시간(지연)을 획기적으로 차단할 수 있습니다.
+
+### Skill 42: ONNX 기반 온디바이스 로컬 TTS 음성 합성 시스템 구축
+- **파일**: `part04_multimodal/ch03_tts_02_supertonic.py`, `part04_multimodal/test_supertonic.py`
+- **핵심**: 외부 네트워크 연결 및 API 과금 장벽이 완전히 차단된 폐쇄망 보안 환경에서 작동하도록 ONNX 기반 로컬 임베디드 TTS 라이브러리인 `supertonic`을 활용해 음성을 합성하고 제어하는 실무 기술입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  from supertonic import TTS
+
+  # 1. 온디바이스 TTS 인스턴스 초기화
+  tts = TTS()
+
+  # 2. 내장 보이스 스타일 로딩 (M1~M5: 남성, F1~F5: 여성)
+  voice_style = tts.get_voice_style("F1")
+
+  # 3. 텍스트 음성 합성 실행 (wav 넘파이 배열 및 재생 시간 반환)
+  wav, duration = tts.synthesize(
+    text="경고합니다! 제한 구역 내 침입자가 감지되었습니다.",
+    voice_style=voice_style,
+    lang="ko"
+  )
+
+  # 4. 물리 파일 저장
+  tts.save_audio(wav, "supertonic_warning.wav")
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - `TTS()` 인스턴스를 생성할 때 필요한 ONNX 가중치 모델 파일들이 로컬 경로로 자동 다운로드 및 캐싱되므로, 최초 배포 시에는 인터넷 환경에서 패키지를 1회 적재시키는 Pre-caching 파이프라인 설계가 권장됩니다.
+  - 리소스가 매우 제한된 임베디드 관제 기기에서는 다중 쓰레드 호출 시 지연이 유발될 수 있으므로 전역 싱글톤(Singleton)으로 TTS 객체를 선언하여 재사용해야 합니다.
+
+### Skill 43: Subprocess 격리 구동 기반 8GB RAM 저사양 OOM 원천 방지 아키텍처
+- **파일**: `part04_multimodal/ch03_04_multi_dialization.py`
+- **핵심**: 초경량 GPU나 8GB 이하 저사양 CPU 관제 PC 환경에서 메모리 점유가 매우 높은 Whisper STT 모델과 Pyannote 화자 분리(`speaker-diarization-3.1`) 모델이 단일 Python 프로세스 상에 동시 적재되어 시스템이 다운되는 현상을 원천 예방하기 위해, 격리된 서브프로세스로 각 단계를 독립 수행하고 중간 JSON 파일로 정합하는 고급 메모리 최적화 기법을 다룹니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  import subprocess
+  import sys
+  import torch
+  import gc
+
+  # [1] 코디네이터: 격리된 독립 프로세스로 순차 구동
+  # STEP 1: Whisper STT 프로세스 가동 (완료 후 메모리 100% 해제)
+  stt_proc = subprocess.run([sys.executable, "-Xutf8", __file__, "--step", "stt"])
+  # STEP 2: Pyannote 화자 분리 프로세스 가동 (Whisper가 소멸되어 깨끗한 램 확보)
+  diar_proc = subprocess.run([sys.executable, "-Xutf8", __file__, "--step", "diarization"])
+
+  # [2] 개별 프로세스 내 램 가용량 수동 극대화 설정
+  # OpenBLAS 메모리 할당 폭증 방지를 위해 CPU 병렬 스레드를 2개로 바인딩
+  torch.set_num_threads(2)
+
+  # soundfile 로딩 즉시 텐서 전환 후 numpy 데이터 원본을 소거 및 가비지 컬렉션
+  waveform_np, sample_rate = sf.read(AUDIO_PATH, dtype="float32")
+  waveform_tensor = torch.tensor(waveform_np)
+  del waveform_np
+  gc.collect()
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - 두 개 이상의 무거운 딥러닝 파이프라인을 연쇄 구동할 때 단일 파이썬 세션에서 실행하면 GPU VRAM이나 RAM 캐시 파편화로 인해 메모리 해제가 되지 않습니다. `subprocess.run`은 해당 모듈이 종료되는 즉시 OS 커널 단에서 프로세스에 할당된 힙 영역을 완벽하게 소거하므로, 상용 보안 장비의 작동 안정성을 물리적으로 100% 확보할 수 있는 현업 특화 패턴입니다.
+
+### Skill 44: 물리 재생 시간 스케일링 비율을 이용한 Hz 팽창 타임스탬프 수학적 교정 기술
+- **파일**: `part04_multimodal/ch03_04_multi_dialization.py`
+- **핵심**: Windows 및 외부 의존성 결함으로 인해 Whisper STT 런타임이 오디오 원래 주파수를 16000Hz 규격으로 다운샘플링하지 못해 타임스탬프가 기이하게 팽창(예: 44.1kHz 음성의 경우 실제 시간의 2.75배로 오독)되는 버그를 수학적 스케일링 공식으로 강제 자동 보정하는 필터링 기술입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  import soundfile as sf
+
+  def correct_whisper_timestamps(segments: list, audio_path: str) -> tuple[list, float]:
+    # 1. ffmpeg 없이 pure python으로 오디오의 물리적 실제 길이 검출
+    info = sf.info(audio_path)
+    actual_duration = info.duration
+
+    if not segments: return segments, 1.0
+
+    # 2. Whisper가 인지한 마지막 타임스탬프 추출
+    whisper_last_ts = max(float(seg.get("end", 0.0)) for seg in segments)
+    if whisper_last_ts <= 0: return segments, 1.0
+
+    # 3. 실제 시간과 오차 비교 및 보정 비율(Ratio) 도출
+    if abs(whisper_last_ts - actual_duration) <= 1.0:
+      return segments, 1.0  # 오차가 1초 미만이면 보정 제외
+
+    ratio = actual_duration / whisper_last_ts # 예: 10초 / 27.5초 = 0.3636
+
+    # 4. 전체 세그먼트에 보정 비율을 곱해 역팽창 복원
+    corrected = []
+    for seg in segments:
+      corrected.append({
+        **seg,
+        "start": float(seg.get("start", 0.0)) * ratio,
+        "end": float(seg.get("end", 0.0)) * ratio
+      })
+    return corrected, ratio
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - 팽창된 타임스탬프를 그대로 사용하면 pyannote가 측정한 16000Hz 기반 정상 화자 정보와 결합했을 때 텍스트 매핑이 전혀 엉뚱한 구간에 들어맞는 심각한 오작동이 일어납니다.
+  - 이 보정 비율(`ratio`)을 STT 세그먼트뿐만 아니라 pyannote 화자 분리 타임라인 데이터에도 동일하게 역산 적용해 정합 정밀도를 높여야 합니다.
+  - 리샘플링 의존성을 완전 우회하기 위해 `torch.nn.functional.interpolate` linear 모드로 텐서 레벨에서 직접 16000Hz로 정밀 다운샘플링하여 전달하는 방식을 선제 처리로 병용합니다.
+
+### Skill 45: 중간값(Midpoint) 기반 경계 우회 매핑 및 연속 발화 병합 알고리즘
+- **파일**: `part04_multimodal/ch03_04_multi_dialization.py`
+- **핵심**: Whisper 텍스트 세그먼트와 pyannote 화자 탐지 시간대의 마이크로초 단위 비동기 경계를 중심점(Midpoint) 연산으로 정합하고, 동일한 화자가 무음 갭(0.8초 이내)을 두고 발언한 내용을 병합하여 가독성 높은 대화록 형태의 최종 보고서 데이터로 직렬화하는 기법입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  def get_speaker_at(seg_start: float, seg_end: float, diarization_data: list) -> str:
+    # 세그먼트의 중심 시점 계산
+    mid = (seg_start + seg_end) / 2.0
+
+    # 1차: mid가 포함되는 [start, end) 열린 경계 구간 탐색 (중복 매핑 차단)
+    for turn in diarization_data:
+      t_start = float(turn.get("start", 0.0))
+      t_end = float(turn.get("end", 0.0))
+      if t_start <= mid < t_end:
+        return str(turn.get("speaker", "UNKNOWN"))
+
+    # 2차 폴백: 무음/갭 시 최단 중심 거리 구간의 화자 검출
+    best_speaker = "UNKNOWN"
+    min_dist = float("inf")
+    for turn in diarization_data:
+      t_start = float(turn.get("start", 0.0))
+      t_end = float(turn.get("end", 0.0))
+      t_center = (t_start + t_end) / 2.0
+      dist = abs(mid - t_center)
+      if dist < min_dist:
+        dist = dist
+        best_speaker = str(turn.get("speaker", "UNKNOWN"))
+    return best_speaker
+
+  def merge_consecutive_segments(segment_with_speaker: list, gap_threshold: float = 0.8) -> list:
+    merged_list = []
+    if not segment_with_speaker: return merged_list
+
+    current_speaker = None
+    current_start = 0.0
+    current_end = 0.0
+    current_text_parts = []
+
+    for entry in segment_with_speaker:
+      spk = entry.get("speaker")
+      start = entry.get("start", 0.0)
+      end = entry.get("end", 0.0)
+      text = entry.get("text", "")
+
+      # 동일 화자이고 gap_threshold 이내 간격인 경우 구간 병합
+      if spk == current_speaker and start <= current_end + gap_threshold:
+        current_end = max(current_end, end)
+        if text: current_text_parts.append(text)
+      else:
+        if current_speaker is not None:
+          merged_list.append({
+            "start": current_start,
+            "end": current_end,
+            "speaker": current_speaker,
+            "text": " ".join(current_text_parts).strip()
+          })
+        current_speaker = spk
+        current_start = start
+        current_end = end
+        current_text_parts = [text] if text else []
+
+    if current_speaker is not None:
+      merged_list.append({
+        "start": current_start,
+        "end": current_end,
+        "speaker": current_speaker,
+        "text": " ".join(current_text_parts).strip()
+      })
+    return merged_list
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - Whisper 세그먼트 경계 근처의 오차로 인해 발생할 수 있는 중복 구간 매핑을 완전히 피하기 위해 끝점 비교 시 미만(`<`)을 적용하는 **열린 구간 설계**가 필수적입니다.
+  - 최종 정제 데이터는 사용자 가독성을 최우선으로 확보하기 위해 문자열을 적절히 공백으로 포매팅하여 별도의 대화형 텍스트 파일(`*_transcript.txt`)로 물리 디스크에 자동 영속화시킵니다.
+
 
 
