@@ -27,8 +27,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
+from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
+import datetime 
 
 from ch04_04_01_visionModel_basic import base64_to_image
 from ch04_02_vision_api_call import analyze_image, json_parse
@@ -76,36 +77,27 @@ def index_image_folder(folder_path:str) -> Chroma:
   for i, img_path in enumerate(image_files, start=1) : 
     print(f"  [{i}/{len(image_files)}] {img_path.name} → 캡션 생성 중...")
     caption_dict = analyze_image(str(img_path), prompt=prompt)
-    print(f"  [성공] 캡션 정보: {caption_dict}")
-    
-    # 캡션 정보를 텍스트 문서 형태로 정제
-    caption_text = (
-      f"주제: {caption_dict.get('subject', '')}\n"
-      f"설명: {caption_dict.get('description', '')}\n"
-      f"분위기: {caption_dict.get('mood', '')}\n"
-      f"색상: {', '.join(caption_dict.get('colors', []))}"
-    )
-    
-    # 랭체인 문서 객체 생성 및 메타데이터 바인딩
-    documents.append(
-      Document(
-        page_content=caption_text,
-        metadata={"image_path": str(img_path)}
-      )
-    )
+    # Document 생성
+    documents.append(Document(
+      page_content=caption_dict.get('description', ""),
+      metadata={
+        "image_path": str(img_path),
+        "file_name" : img_path.name        
+      }
+    ))
 
-  # [RAG 데이터베이스 적재] 디렉토리 구조상 part04_multimodal 하위에 chroma_db를 구축
-  print("\nVector DB 인덱싱을 수행하고 있습니다...")
-  embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-  persist_dir = Path(folder_path).parent / "chroma_db"
-  
-  db = Chroma.from_documents(
-    documents=documents,
-    embedding=embeddings,
-    persist_directory=str(persist_dir)
+  # embedding
+  embedding_model = OpenAIEmbeddings(
+    model="text-embedding-3-small",
+    api_key=os.getenv('OPENAI_API_KEY')
   )
-  print(f"[OK] RAG 인덱싱 성공 완료! (영속화 저장소: {persist_dir})")
-  return db
+
+  vector_db = Chroma.from_documents(
+    documents=documents,
+    embedding=embedding_model,
+    persist_directory="./image_vector_db"
+  )
+  return vector_db
 
 
 if __name__ == "__main__":

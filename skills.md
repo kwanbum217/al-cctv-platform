@@ -883,5 +883,59 @@
   - GPT-4o나 Claude 3.5 등 멀티모달 모델 API에 이미지를 입력으로 전송할 때에는 반드시 이미지의 바이너리가 어떤 웹 미디어 규격(MIME Type)인지 함께 알려주어야만 해석기가 정상 파싱을 수행합니다.
   - 파일 로드 시 텍스트 인코딩 충돌을 방지하기 위해 파일 열기 모드를 반드시 바이너리 모드(`"rb"`)로 강제해야 이미지 훼손을 예방할 수 있습니다.
 
+### Skill 47: 이미지 캡셔닝 기반 이미지 RAG(ChromaDB) 영속 인덱싱 파이프라인
+- **파일**: `part04_multimodal/ch04_04_image_rag.py`
+- **핵심**: 멀티모달 API를 이용해 폴더 내의 다중 이미지를 구조화된 JSON 데이터로 자동 요약 캡셔닝하고, 캡션 텍스트 데이터를 랭체인 `Document` 객체화하여 `OpenAIEmbeddings`와 결합한 후 로컬 디바이스의 영속성 `Chroma` 벡터스토어에 완벽히 적재하는 통합 파이프라인 기술입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  from pathlib import Path
+  from langchain_openai import OpenAIEmbeddings
+  from langchain_chroma import Chroma
+  from langchain_core.documents import Document
+
+  def index_image_folder(folder_path: str) -> Chroma:
+    supported = {".jpg", ".jpeg", ".png", ".webp"}
+    image_files = [p for p in Path(folder_path).iterdir() if p.suffix.lower() in supported]
+    
+    documents = []
+    # 1. Vision API에 엄격한 JSON 응답 포맷팅 지시 프롬프트 주입
+    prompt = """이 이미지를 정밀 분석해서 아래 JSON 형식으로만 응답하세요.
+{
+  "subject": "이미지의 주요 피사체",
+  "description": "전체적인 설명 (2~3문장)",
+  "mood": "이미지의 분위기",
+  "colors": ["주요 색상1", "주요 색상2"]
+}"""
+
+    for img_path in image_files:
+      caption_dict = analyze_image(str(img_path), prompt=prompt)
+      
+      # 캡션 정보를 텍스트 문서 형태로 정제
+      caption_text = (
+        f"주제: {caption_dict.get('subject', '')}\n"
+        f"설명: {caption_dict.get('description', '')}\n"
+        f"분위기: {caption_dict.get('mood', '')}\n"
+        f"색상: {', '.join(caption_dict.get('colors', []))}"
+      )
+      
+      documents.append(
+        Document(page_content=caption_text, metadata={"image_path": str(img_path)})
+      )
+
+    # 2. 임베딩 모듈화 및 ChromaDB 로컬 영속화 적재
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    persist_dir = Path(folder_path).parent / "chroma_db"
+    
+    db = Chroma.from_documents(
+      documents=documents,
+      embedding=embeddings,
+      persist_directory=str(persist_dir)
+    )
+    return db
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - 이미지를 직접 고차원 벡터로 저장하는 이미지 매칭 RAG와 달리, **Vision API가 요약한 텍스트 설명을 벡터로 임베딩하여 RAG를 구성**함으로써 일반 텍스트 질의("주황색 고양이 사진 찾아줘")로 타겟 이미지를 정교하게 역추적할 수 있는 높은 하이브리드 검색 편의성을 확보합니다.
+  - LLM에게 프롬프트 주입 시 정확한 JSON 구조화 템플릿을 누락하면 런타임 `JSONDecodeError`가 발생하므로, JSON 예제 뼈대와 응답에 지켜야 할 속성명 지정을 강하게 제약해야 안전합니다.
+
 
 
