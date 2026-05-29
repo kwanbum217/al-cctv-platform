@@ -60,7 +60,12 @@ def analyze_multiple_images(image_paths:list[str], prompt:str) -> dict:
     max_tokens=600
   )
 
-  return json_parse(resp.choices[0].message.content)
+  # [타입 안전성 가드] OpenAI 응답 content가 str | None 이므로 None 검증 분기를 넣어 Pylance 경고 밑줄을 완전히 해결합니다.
+  content = resp.choices[0].message.content
+  if content is None:
+    raise ValueError("OpenAI API 응답 content가 비어 있습니다. [None]")
+
+  return json_parse(content)
 
   
 
