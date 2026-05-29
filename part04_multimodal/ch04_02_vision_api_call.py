@@ -66,7 +66,11 @@ def analyze_image(image_path:str, prompt:str) -> dict:
     max_tokens=500
   )
 
+  # [타입 안전성 가드] content가 None인 경우를 체크해 에러 및 정적 분석기 밑줄 경고를 해결합니다.
   content = response.choices[0].message.content
+  if content is None:
+    raise ValueError("OpenAI API 응답 content가 비어 있습니다. [None]")
+
   return json_parse(content)
 
 

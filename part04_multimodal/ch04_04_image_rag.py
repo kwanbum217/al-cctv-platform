@@ -1,0 +1,116 @@
+## 이미지 RAG란 무엇인가
+
+# 일반 RAG는 텍스트 문서를 벡터로 저장하고 검색한다.  
+# **이미지 RAG** 는 이미지의 **설명(캡션)** 을 벡터로 저장하고 검색한다.
+
+# ```
+# [사전 작업 — Indexing]
+#   이미지 파일
+#       └→ Vision API → 이미지 설명(캡션) 텍스트
+#                           └→ Embedding → 벡터
+#                                             └→ Vector DB 저장
+#                                                (캡션 텍스트 + 이미지 파일 경로)
+
+# [검색 — Retrieval]
+#   검색 쿼리 (예: "주황색 고양이")
+#       └→ Embedding → 쿼리 벡터
+#                          └→ Vector DB 유사도 비교 → 유사한 이미지 Top-K 반환
+#                                                        └→ metadata['image_path'] 로 파일 복원
+# ```
+
+# 핵심은 단순하다.  
+# 이미지를 직접 벡터로 저장하는 게 아니라, **Vision API가 만든 텍스트 설명을 벡터로 저장** 한다.  
+# 그래서 "고양이가 있는 사진 찾아줘" 같은 텍스트 쿼리로 이미지를 찾을 수 있다.
+
+import json, os, re, base64
+from pathlib import Path
+from dotenv import load_dotenv
+from openai import OpenAI
+from langchain_openai import OpenAIEmbeddings
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+
+from ch04_04_01_visionModel_basic import base64_to_image
+from ch04_02_vision_api_call import analyze_image, json_parse
+
+load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def index_image_folder(folder_path:str) -> Chroma:
+  """
+    폴더 안의 모든 이미지 파일을 Vision API로 분석해서
+    Vector DB에 인덱싱한다.
+
+    처리 흐름:
+        이미지 파일 목록 탐색
+            └→ 각 이미지 → analyze_image() → 캡션 텍스트
+                                └→ Document(page_content=캡션, metadata={"image_path": ...})
+                                        └→ Chroma.from_documents() → Vector DB
+
+    Returns:
+        검색 가능한 Chroma Vector DB 객체
+  """
+  # 지원 확장자 필터
+  supported = {".jpg", ".jpeg", ".png", ".webp"}
+  image_files = [
+    p for p in Path(folder_path).iterdir()
+    if p.suffix.lower() in supported
+  ]
+
+  if not image_files : 
+    raise ValueError(f"{folder_path}에 이미지 파일이 없습니다")
+  print(f"총 {len(image_files)}개 이미지 발견")
+  print(image_files)
+
+  documents = []
+  # [교정] 엉뚱한 docstring 문자열 주석을 제거하고, LLM에게 JSON으로 답변하도록 명확히 지시하는 RAG 전용 프롬프트 수립
+  prompt = """이 이미지를 정밀 분석해서 아래 JSON 형식으로만 응답하세요.
+{
+  "subject": "이미지의 주요 피사체",
+  "description": "전체적인 설명 (2~3문장)",
+  "mood": "이미지의 분위기",
+  "colors": ["주요 색상1", "주요 색상2"]
+}"""
+
+  for i, img_path in enumerate(image_files, start=1) : 
+    print(f"  [{i}/{len(image_files)}] {img_path.name} → 캡션 생성 중...")
+    caption_dict = analyze_image(str(img_path), prompt=prompt)
+    print(f"  [성공] 캡션 정보: {caption_dict}")
+    
+    # 캡션 정보를 텍스트 문서 형태로 정제
+    caption_text = (
+      f"주제: {caption_dict.get('subject', '')}\n"
+      f"설명: {caption_dict.get('description', '')}\n"
+      f"분위기: {caption_dict.get('mood', '')}\n"
+      f"색상: {', '.join(caption_dict.get('colors', []))}"
+    )
+    
+    # 랭체인 문서 객체 생성 및 메타데이터 바인딩
+    documents.append(
+      Document(
+        page_content=caption_text,
+        metadata={"image_path": str(img_path)}
+      )
+    )
+
+  # [RAG 데이터베이스 적재] 디렉토리 구조상 part04_multimodal 하위에 chroma_db를 구축
+  print("\nVector DB 인덱싱을 수행하고 있습니다...")
+  embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+  persist_dir = Path(folder_path).parent / "chroma_db"
+  
+  db = Chroma.from_documents(
+    documents=documents,
+    embedding=embeddings,
+    persist_directory=str(persist_dir)
+  )
+  print(f"[OK] RAG 인덱싱 성공 완료! (영속화 저장소: {persist_dir})")
+  return db
+
+
+if __name__ == "__main__":
+  # [경로 독립성 확보] _SCRIPT_DIR 기법을 이용하여 프로젝트 루트나 멀티모달 폴더 어디서 실행하든 절대 경로로 로드
+  _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+  target_folder = os.path.join(_SCRIPT_DIR, "vision_sample")
+  
+  db = index_image_folder(target_folder)
