@@ -848,5 +848,39 @@
   - Whisper 세그먼트 경계 근처의 오차로 인해 발생할 수 있는 중복 구간 매핑을 완전히 피하기 위해 끝점 비교 시 미만(`<`)을 적용하는 **열린 구간 설계**가 필수적입니다.
   - 최종 정제 데이터는 사용자 가독성을 최우선으로 확보하기 위해 문자열을 적절히 공백으로 포매팅하여 별도의 대화형 텍스트 파일(`*_transcript.txt`)로 물리 디스크에 자동 영속화시킵니다.
 
+### Skill 46: 이미지 파일의 Base64 인코딩 및 미디어 타입(MIME) 동적 매핑 기술
+- **파일**: `part04_multimodal/ch04_04_01_visionModel_basic.py`
+- **핵심**: 멀티모달 Vision API에 이미지를 송신하기 위해 이미지를 텍스트 데이터 포맷인 Base64 형식으로 인코딩하고, 이미지의 확장자에 맞게 정확한 미디어 타입(MIME)을 동적으로 식별하여 튜플 구조로 반환하는 기초 전처리 기술입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  import base64
+  from pathlib import Path
+
+  def image_to_base64(image_path: str) -> tuple[str, str]:
+    path = Path(image_path)
+    
+    # 1. 파일 확장자를 분석하여 미디어 타입 결정
+    suffix = path.suffix.lower()
+    if suffix in [".jpg", ".jpeg"]:
+      media_type = "image/jpeg"
+    elif suffix == ".png":
+      media_type = "image/png"
+    elif suffix == ".gif":
+      media_type = "image/gif"
+    elif suffix == ".webp":
+      media_type = "image/webp"
+    else:
+      media_type = f"image/{suffix.lstrip('.')}"
+
+    # 2. 이미지 바이너리를 로드하여 Base64 인코딩 수행
+    with open(path, "rb") as image_file:
+      encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+
+    return encoded_string, media_type
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - GPT-4o나 Claude 3.5 등 멀티모달 모델 API에 이미지를 입력으로 전송할 때에는 반드시 이미지의 바이너리가 어떤 웹 미디어 규격(MIME Type)인지 함께 알려주어야만 해석기가 정상 파싱을 수행합니다.
+  - 파일 로드 시 텍스트 인코딩 충돌을 방지하기 위해 파일 열기 모드를 반드시 바이너리 모드(`"rb"`)로 강제해야 이미지 훼손을 예방할 수 있습니다.
+
 
 
