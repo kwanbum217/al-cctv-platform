@@ -937,5 +937,26 @@
   - 이미지를 직접 고차원 벡터로 저장하는 이미지 매칭 RAG와 달리, **Vision API가 요약한 텍스트 설명을 벡터로 임베딩하여 RAG를 구성**함으로써 일반 텍스트 질의("주황색 고양이 사진 찾아줘")로 타겟 이미지를 정교하게 역추적할 수 있는 높은 하이브리드 검색 편의성을 확보합니다.
   - LLM에게 프롬프트 주입 시 정확한 JSON 구조화 템플릿을 누락하면 런타임 `JSONDecodeError`가 발생하므로, JSON 예제 뼈대와 응답에 지켜야 할 속성명 지정을 강하게 제약해야 안전합니다.
 
+### Skill 48: Tesseract OCR 엔진 무인 설치 및 Python 연동 경로 장애 극복 기술
+- **파일**: `part04_multimodal/ch05_ocr_01_basic.py`
+- **핵심**: Windows 환경에서 Tesseract OCR 코어 엔진을 `winget` 무인 방식으로 설치하고, 파이썬 프로세스 세션의 PATH 반영 지연 문제를 극복하기 위해 `pytesseract.pytesseract.tesseract_cmd` 절대경로 명시 방어 코드를 선제 적용하여 런타임 `TesseractNotFoundError` 예외를 원천적으로 방지하는 기술입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  import pytesseract
+  from PIL import Image
+
+  # [핵심] Windows 환경에서 Tesseract 실행 파일 절대 경로 명시
+  pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+  def extract_text(image_path: str) -> str:
+    image = Image.open(image_path)
+    # 한글과 영어 추출 동시 설정
+    return pytesseract.image_to_string(image, lang="eng+kor").strip()
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - **Wrapper와 Core Engine의 분리**: 파이썬 `pytesseract`는 단지 Tesseract 실행 파일을 호출하는 Wrapper 라이브러리이므로, 이미지 판독 연산을 수행하기 위해서는 반드시 OS 환경에 맞는 물리적인 Tesseract OCR 코어 프로그램이 미리 설치되어 있어야 합니다.
+  - **환경 변수 세션 리셋 결함 우려**: `winget` 등으로 설치가 완료되었더라도, 현재 켜져 있는 IDE(VS Code 등)나 파이썬 프로세스는 윈도우 PATH 변경 상태를 즉시 반영하지 못해 계속 에러가 날 수 있습니다. 이럴 때는 시스템 PATH에만 의존하기보다 코드 단에서 `tesseract_cmd`에 절대경로를 선언하는 것이 가장 신속하고 견고한 대응 방안입니다.
+
+
 
 
