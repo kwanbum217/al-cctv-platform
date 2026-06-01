@@ -33,3 +33,5 @@ for (bbox, text, confidence) in result:
     # text       : 인식된 글자
     # confidence : 얼마나 확신하는지 (0~1)
     print(f"인식: {text}  (신뢰도 {confidence:.2f})")
+
+
