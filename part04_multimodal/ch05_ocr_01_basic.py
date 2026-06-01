@@ -45,3 +45,4 @@ for word, conf in zip(data['text'], data['conf']):
 #     'height': [20, 20, 20],    # 단어 높이 (px)
 # }
 # left, top, width, height → OpenCV로 사각형 그릴 때 활용 가능!
+
