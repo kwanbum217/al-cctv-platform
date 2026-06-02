@@ -957,6 +957,95 @@
   - **Wrapper와 Core Engine의 분리**: 파이썬 `pytesseract`는 단지 Tesseract 실행 파일을 호출하는 Wrapper 라이브러리이므로, 이미지 판독 연산을 수행하기 위해서는 반드시 OS 환경에 맞는 물리적인 Tesseract OCR 코어 프로그램이 미리 설치되어 있어야 합니다.
   - **환경 변수 세션 리셋 결함 우려**: `winget` 등으로 설치가 완료되었더라도, 현재 켜져 있는 IDE(VS Code 등)나 파이썬 프로세스는 윈도우 PATH 변경 상태를 즉시 반영하지 못해 계속 에러가 날 수 있습니다. 이럴 때는 시스템 PATH에만 의존하기보다 코드 단에서 `tesseract_cmd`에 절대경로를 선언하는 것이 가장 신속하고 견고한 대응 방안입니다.
 
+---
+
+## Part 05 - 객체 탐지 & YOLO
+
+### Skill 49: YOLOv8 기반 다중 이미지 자동 배치 객체 탐지 및 절대 경로 동적 이미지 수집 파이프라인
+- **파일**: `part05_yolo/ch01_yolo_basic.py`
+- **핵심**: `part04_multimodal/vision_sample` 폴더 내 다수의 실습용 이미지 데이터를 절대경로로 안전하게 역추적하여 동적으로 수집하고, `model.predict()`로 다중 이미지 일괄 객체 탐지를 1회성 로드로 고속 처리하는 배치 추론 아키텍처입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  import os
+  from ultralytics import YOLO
+
+  # 1. 실행 스크립트 기반 vision_sample 디렉토리 경로 탐색
+  current_dir = os.path.dirname(os.path.abspath(__file__))
+  vision_sample_dir = os.path.abspath(os.path.join(current_dir, "..", "part04_multimodal", "vision_sample"))
+
+  # 2. 폴더 내 이미지 파일들을 동적으로 수집 (.jpeg, .jpg, .png)
+  image_extensions = (".jpg", ".jpeg", ".png")
+  source_path = [
+    os.path.join(vision_sample_dir, f)
+    for f in os.listdir(vision_sample_dir)
+    if f.lower().endswith(image_extensions)
+  ]
+
+  # 3. YOLOv8 nano 모델 로딩 및 예측
+  model = YOLO(os.path.join(current_dir, "yolov8n.pt"))
+  results = model.predict(source=source_path, conf=0.1, save=True)
+  ```
+- **실무 주의사항 및 팁**:
+  - 루프 내부에서 개별 파일에 대해 모델을 매번 `YOLO(...)`로 로드하면 메모리와 지연(Latency)이 크게 낭비되므로, 반드시 한 번 로드된 모델 인스턴스에 `source_path` 리스트를 뭉쳐서 한 번에 전달해야 초고속 일괄 추론이 이루어집니다.
+
+### Skill 50: Pylance/Pyright 타입 안전성(None-safe) 대응 및 린트 경고 방어 패턴
+- **파일**: `part05_yolo/ch01_yolo_basic.py`
+- **핵심**: YOLOv8 `Result` 모델의 반환 속성들(`boxes`, `cls`, `conf`, `xyxy`, `xyxyn`)이 타입 시스템상 `None`일 수 있음을 감안하여, Pyright/Pylance 타입 검사기가 경고 밑줄을 긋지 않도록 안전한 로컬 변수 바인딩 및 가드 조건(`is not None` 체킹)을 선제 배치하여 에디터 린트 에러를 100% 소거하는 클린 코드 설계 기법입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  for i, r in enumerate(results, start=1):
+    boxes = r.boxes
+    if boxes is not None and len(boxes) > 0:    
+      print(f"[OK] 이미지 {i} 탐지 개수: ", len(boxes))
+      for box in boxes:
+        # Pyright 타입 추론 경고를 완벽히 잠재우기 위한 None-safe 조건 검증
+        if box.cls is not None and box.conf is not None and box.xyxy is not None and box.xyxyn is not None:
+          class_id = int(box.cls[0])
+          class_name = r.names[class_id]
+          confidence = round(float(box.conf[0]), 2)
+  ```
+- **실무 주의사항 및 팁**:
+  - `len(r.boxes)`와 같이 타입 검증 없이 외부 라이브러리 속성을 직접 호출하면 `Boxes | None`과의 불일치로 인해 에디터에 경고 밑줄이 무수히 생성됩니다. 이를 방지하기 위해 로컬 변수(예: `boxes = r.boxes`)에 담아 `is not None` 가드를 선언하는 것이 현명합니다.
+
+### Skill 51: Bounding Box 픽셀 정수 좌표와 정규화(Normalized) 실수 좌표 동시 추출 기술
+- **파일**: `part05_yolo/ch01_yolo_basic.py`
+- **핵심**: 객체 탐지 결과 데이터로부터 실제 이미지 픽셀 크기 기준의 정수형 좌표(`[x1, y1, x2, y2]`)와 YOLO 훈련용 라벨 형식인 0.0 ~ 1.0 비율 범위의 정규화된 실수형 좌표(`box.xyxyn`)를 동시에 추출하여 터미널에 포맷팅하여 표시함으로써 분석 정밀도를 다각화하는 수리 기법입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  # 1. 픽셀 해상도 기준 정수 좌표 획득
+  x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+
+  # 2. 이미지 가로/세로 비율(0~1) 기준 정규화 좌표 획득 (소수점 4자리 반올림)
+  x1n, y1n, x2n, y2n = [round(float(v), 4) for v in box.xyxyn[0].tolist()]
+  
+  print(f"위치: [{x1}, {y1}, {x2}, {y2}] | 정규화: [{x1n}, {y1n}, {x2n}, {y2n}]")
+  ```
+- **실무 주의사항 및 팁**:
+  - `box.xyxy[0]` 텐서는 PyTorch GPU/CPU 메모리에 있으므로 파이썬 가공 루틴을 돌리려면 반드시 `.tolist()` 메서드를 이용해 순수 파이썬 float 배열로 1차 평탄화한 뒤 `int` 및 `float` 형변환을 적용해야 최적 속도를 보장합니다.
+
+### Skill 52: result.plot()의 BGR numpy 배열 렌더링 결과물 OpenCV 연동 디스크 파일 영속화
+- **파일**: `part05_yolo/ch01_yolo_basic.py`
+- **핵심**: YOLOv8이 제공하는 시각화 도구인 `result.plot()`을 실행하여 원본 프레임 위에 바운딩 박스, 클래스명, 신뢰도가 렌더링된 numpy 배열(BGR 이미지)을 구하고, OpenCV의 `cv2.imwrite()`를 통해 즉각적인 로컬 디스크 파일(`plotted_result.jpg`)로 물리 영속화시키는 연동 시각화 기술입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  try:
+    import cv2
+    if len(results) > 0:
+      result = results[0]
+      # result.plot()은 BGR 색상 포맷의 numpy 배열을 반환합니다.
+      plotted_img = result.plot()
+      
+      # OpenCV를 이용해 plotted_result.jpg 파일로 저장
+      output_path = os.path.join(current_dir, "plotted_result.jpg")
+      cv2.imwrite(output_path, plotted_img)
+      print(f"[OK] OpenCV 시각화 완료: {output_path}")
+  except ImportError:
+    print("[WARNING] OpenCV(cv2) 라이브러리가 존재하지 않습니다.")
+  ```
+- **실무 주의사항 및 팁**:
+  - `result.plot()`은 PyTorch 텐서가 아니라 일반적인 OpenCV용 BGR `numpy.ndarray`를 반환하므로, `matplotlib` 등으로 렌더링하려면 색상 도메인(BGR -> RGB)을 `cv2.cvtColor` 등으로 추가 가공해 주어야 왜곡 없는 고유 색상이 유지됩니다.
+  ```
+
 
 
 

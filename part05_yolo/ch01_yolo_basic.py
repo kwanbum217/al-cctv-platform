@@ -157,3 +157,20 @@ except ImportError:
 # - confidence
 # 반환값은 numpy 배열입니다.
 # 즉, OpenCV에서 사용하는 이미지 형식과 같습니다.
+
+# ===================================================
+# YOLO("yolov8n.pt")로 사전훈련 모델을 불러온다.
+
+# model.predict()로 이미지 탐지를 실행한다.
+
+# results는 리스트이므로 results[0]으로 첫 번째 결과를 꺼낸다.
+
+# result.boxes에는 탐지된 객체 정보가 들어 있다.
+
+# box.cls는 클래스 번호다.
+
+# box.conf는 신뢰도다.
+
+# box.xyxy는 박스 픽셀 좌표다.
+
+# result.plot()으로 결과 이미지를 만들고 cv2.imwrite()로 저장할 수 있다.
