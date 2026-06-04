@@ -1,12 +1,12 @@
 #  사전 훈련 모델로 객체 인식 기본기 익히기
 import os
 import sys
-from ultralytics import YOLO 
+from ultralytics import YOLO  # type: ignore
 import cv2
 
 # 터미널 UTF-8 인코딩 설정
 if hasattr(sys.stdout, "reconfigure"):
-  sys.stdout.reconfigure(encoding="utf-8")
+  getattr(sys.stdout, "reconfigure")(encoding="utf-8")
 
 # 실행 경로 독립성 확보 (절대경로 전환)
 current_dir = os.path.dirname(os.path.abspath(__file__))
