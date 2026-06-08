@@ -1,0 +1,9 @@
+# data.yaml : YOLO에게 주는 안내문
+
+path: /D:/korea_IT/2025_LangChain_/ai-cctv-platform/part05_yolo/yolo_train  # 데이터셋 최상위 폴더의 절대경로
+train: images/train          # path 기준 훈련 이미지 폴더
+val: images/val              # path 기준 검증 이미지 폴더
+
+# 클래스 번호 → 이름. 라벨의 0,1 이 무엇인지 알려줍니다.
+names:
+  0: hard-hat

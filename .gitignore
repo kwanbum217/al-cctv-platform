@@ -169,3 +169,16 @@ runs/
 *.gif
 plotted_result.jpg
 **/plotted_result.jpg
+
+# =========================================================
+# YOLO Dataset, Labels & Debug Outputs
+# =========================================================
+labels/
+**/labels/
+debug/
+**/debug/
+anotated/
+**/anotated/
+*.zip
+kkb_yolo_image_txt/
+**/kkb_yolo_image_txt/

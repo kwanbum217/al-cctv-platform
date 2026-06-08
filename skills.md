@@ -360,6 +360,9 @@
 | **os.path.join 경로 누수** | `os.path.join(path, "/sub")`처럼 서브 인자에 슬래시로 시작하는 경로를 기입하면 드라이브 루트로 재매핑되어 부모 경로가 유실됩니다. 슬래시가 없는 상대 디렉토리명(`"sub"`, `"file"`) 형태로만 인자를 구분하여 전달해야 합니다. |
 | **ffmpeg 외부 호출 특수문자 에러** | Windows 환경에서 외부 프로세스인 `ffmpeg`를 호출할 때 파일명에 특수 따옴표(`“`, `”`)가 있으면 `Illegal byte sequence`를 일으키며 크래시가 납니다. 물리 파일명 자체를 일반 알파벳/숫자/공백 위주의 안전한 파일명으로 리네임하고 코드를 수정해야 합니다. |
 | **API 응답 타입 경고 (str \| None)** | OpenAI API의 응답 `content`는 `str | None` 타입이므로, 타입 힌트가 `str`로만 지정된 파싱 함수(예: `json_parse`)에 직접 넘겨주면 Pylance 등 에디터가 경고 밑줄을 긋습니다. 해결책은 `content = response.choices[0].message.content`로 변수를 추출한 후 `if content is None:` 분기 가드를 선제 배치하여 타입 안전성을 확보하는 것입니다. |
+| **sys.stdout.reconfigure 린터 경고** | Pylance가 `sys.stdout`의 타입을 추론할 때 `reconfigure` 메서드가 없는 것으로 파악해 경고를 띄울 시, `getattr(sys.stdout, "reconfigure")(encoding="utf-8")` 형태로 동적 호출을 적용해 밑줄 경고를 해결합니다. |
+| **YOLO 임포트 린터 경고** | `from ultralytics import YOLO` 구문에서 타입 파일 미비로 경고 밑줄이 생기는 경우, 임포트 줄에 `# type: ignore` 주석 가드를 부여하여 에디터 린트 오류를 비활성화합니다. |
+| **YOLO 데이터셋 폴더명 오타 및 불일치** | 실습용 원천 데이터 폴더명이 `anotated`(n이 1개)와 같이 오타가 발생했을 시, 코드 내 이미지 경로와 `.gitignore` 무시 목록을 실제 물리 폴더명으로 일치시켜 파일 수집 누락과 깃 누출 사고를 예방합니다. |
 
 ---
 
@@ -1044,6 +1047,86 @@
   ```
 - **실무 주의사항 및 팁**:
   - `result.plot()`은 PyTorch 텐서가 아니라 일반적인 OpenCV용 BGR `numpy.ndarray`를 반환하므로, `matplotlib` 등으로 렌더링하려면 색상 도메인(BGR -> RGB)을 `cv2.cvtColor` 등으로 추가 가공해 주어야 왜곡 없는 고유 색상이 유지됩니다.
+
+### Skill 53: 포토샵 빨간 박스 감지를 통한 YOLO xywhn 라벨 자동 생성 및 이미지 전처리 파이프라인
+- **파일**: `part05_yolo/ch02_yolo_xywhn_label.py`
+- **핵심**: 이미지 상에 그린 빨간색 외곽선(박스) 픽셀 영역을 OpenCV BGR 범위 마스킹(`cv2.inRange`)으로 검출하고, 모폴로지 클로징(`cv2.morphologyEx`) 연산으로 노이즈를 제거한 뒤, 외접 사각형(`cv2.boundingRect`)을 추출하여 YOLO 훈련 표준 정규화 규격인 xywhn 라벨로 자동 변환하는 픽셀-라벨 하이브리드 전처리 아키텍처입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  # BGR 범위 마스킹으로 빨간 픽셀만 추출 (빨간색: B낮음, G낮음, R높음)
+  lower = np.array(red_lower, dtype=np.uint8)
+  upper = np.array(red_upper, dtype=np.uint8)
+  mask = cv2.inRange(img, lower, upper)
+  
+  # 모폴로지 닫기(CLOSE) 연산으로 끊어진 선 병합
+  kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+  mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+  # 외곽선 검출 및 외접 사각형 추출
+  contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+  for cnt in contours:
+    if cv2.contourArea(cnt) < 10: continue
+    bx, by, bw, bh = cv2.boundingRect(cnt)
+    
+    # 픽셀 좌표를 0~1 비율의 xywhn 정규화 좌표로 변환
+    cx = (bx + bw / 2) / W
+    cy = (by + bh / 2) / H
+    nw = bw / W
+    nh = bh / H
+  ```
+
+### Skill 54: 절대 경로 기반 다중 확장자 이미지 동적 배치 라벨링 및 이모지 제거 콘솔 로깅 아키텍처
+- **파일**: `part05_yolo/ch02_yolo_xywhn_label.py`
+- **핵심**: 윈도우 환경에서 실행 경로(CWD)에 제약받지 않도록 스크립트 기반 절대경로를 동적 변환하고, `glob` 패턴 조합을 사용하여 폴더 내의 `.png`, `.jpg`, `.jpeg` 파일들을 한 번에 동적으로 수집하여 일괄 변환 처리하며, 콘솔 로깅 시 이모지 충돌을 방지하기 위해 일반 대괄호 기호로 통일한 최적화 배치 자동화 패턴입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  current_dir = os.path.dirname(os.path.abspath(__file__))
+  
+  # PNG/JPG/JPEG 복합 확장자 절대경로 수집
+  search_patterns = [
+    os.path.join(current_dir, "anotated", "*.png"),
+    os.path.join(current_dir, "anotated", "*.jpg"),
+    os.path.join(current_dir, "anotated", "*.jpeg")
+  ]
+  image_files = []
+  for pattern in search_patterns:
+    image_files.extend(glob.glob(pattern))
+  
+  # 이모지 제거 및 대괄호 포맷 로그 출력
+  print(f"[OK] {img_path} -> 박스 {len(labels)}개")
+  ```
+
+### Skill 55: YOLO 라벨 규칙 정합성 자율 검증 및 조기 리턴(들여쓰기) 논리 결함 극복을 통한 Pre-flight 린팅 모듈
+- **파일**: `part05_yolo/ch03_yolo_check_labels.py`
+- **핵심**: YOLO 훈련에 진입하기 전 라벨 데이터의 규칙(한 줄에 정확히 5개 값, 유효한 정수형 클래스 범위, 0~1 사이의 정규화된 실수형 좌표 값)을 자동 전수 검사하고, 루프 내부의 조기 리턴(Return) 들여쓰기 버그를 극복하여 모든 파일을 완벽하게 린팅하며, 리소스 누수를 막기 위해 `with open` 컨텍스트 매니저와 UTF-8 인코딩을 강제 적용한 품질 보증 체크포인트 기술입니다.
+- **핵심 구현 코드 (스페이스 2칸 컨벤션 준수)**:
+  ```python
+  def check_labels(label_dir, num_classes):
+    problems = []
+    for path in glob.glob(os.path.join(label_dir, "*.txt")):
+      with open(path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f, 1):
+          line = line.strip()
+          if not line: continue
+          parts = line.split()
+          if len(parts) != 5:
+            problems.append(f"{os.path.basename(path)}:{i} 값 개수 {len(parts)} (5개여야 함)")
+            continue
+          
+          # 클래스 번호 및 좌표 유효 범위 검사
+          cls = int(parts[0])
+          vals = [float(v) for v in parts[1:]]
+          if not (0 <= cls < num_classes):
+            problems.append(f"{os.path.basename(path)}:{i} class {cls} 범위초과")
+          if any(v < 0 or v > 1 for v in vals):
+            problems.append(f"{os.path.basename(path)}:{i} 좌표가 0~1 범위 밖")
+            
+    # [중요] 조기 리턴 버그 방지를 위해 for 루프 외부에 return 배치
+    return problems
+  ```
+- **실무 주의사항 및 팁 (Warnings & Tips)**:
+  - 훈련 데이터 검증 단계에서 파일의 조기 리턴이 루프 내부에 존재하는 결함은 1개 파일만 형식 검증하고 끝나는 가짜 정상 결과를 생성하므로 인덱싱 루프 설계를 정교하게 마쳐야 합니다.
+  - 파일 리소스의 안전한 반환을 위해 `open()` 직접 호출 대신 반드시 `with` 문과 `encoding="utf-8"` 명시 기법을 채택해야 합니다.
   ```
 
 
